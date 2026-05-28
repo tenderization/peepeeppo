@@ -27,8 +27,8 @@ def longest_of(marker, state):
             curr_longest = 0
             for i in range(h):
                 x = x0 + i if left else x0 - i
-                y = i
-                if x >= w or y >= h:
+                y = h - 1 - i
+                if x >= w or y >= h or x < 0:
                     break
                 curr_state = state[y][x]
                 if curr_state == marker:
@@ -39,6 +39,13 @@ def longest_of(marker, state):
                     curr_longest = 0
     return longest
 
+def full(state):
+    for y in range(len(state)):
+        for x in range(len(state[0])):
+            if not state[y][x]:
+                return False
+    return True
+
 def test_longest_of():
     data0 = [[-1, 0, 1],
              [-1, 1, 1],
@@ -46,6 +53,9 @@ def test_longest_of():
     data1 = [[ 0, 0, 0],
              [-1, 0, 1],
              [-1, 1, 0]]
+    data2 = [[1, -1, 1],
+             [1, -1, 1],
+             [-1, 1,-1]]
 
     assert(longest_of(-1, data0) == 3)
     assert(longest_of( 1, data0) == 3)
@@ -53,6 +63,10 @@ def test_longest_of():
     assert(longest_of(-1, data1) == 2)
     assert(longest_of( 1, data1) == 2)
     assert(longest_of( 0, data1) == 3)
+    assert(longest_of(-1, data2) == 2)
+    assert(longest_of( 1, data2) == 2)
+    assert(longest_of( 0, data2) == 0)
+
 
 def test():
     test_longest_of()
