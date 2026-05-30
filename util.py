@@ -1,5 +1,7 @@
+import torch
 
-def longest_of(marker, state):
+
+def longest_of(marker, state, stop=3):
     # N^2
     h = len(state)
     w = len(state[0])
@@ -13,6 +15,8 @@ def longest_of(marker, state):
                     curr_longest += 1
                     if curr_longest > longest:
                         longest = curr_longest
+                        if longest >= stop:
+                            return longest
                 else:
                     curr_longest = 0
     # \
@@ -22,7 +26,8 @@ def longest_of(marker, state):
     #  /
     # /
     #/
-    for left in (False, True):
+    #for left in (False, True):
+        left = transpose
         for x0 in range(w):
             curr_longest = 0
             for i in range(h):
@@ -35,6 +40,8 @@ def longest_of(marker, state):
                     curr_longest += 1
                     if curr_longest > longest:
                         longest = curr_longest
+                        if longest >= stop:
+                            return longest
                 else:
                     curr_longest = 0
     return longest
