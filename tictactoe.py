@@ -172,7 +172,7 @@ def lossfunc(probs, actions, oldactionprobs, advantages, values, targvalues, ent
     #return -c2*lentropy
 
 
-def train():
+def train(outname):
     minibatch_size = 16384
     target_batch_size = 16384
     iters = 1000
@@ -206,7 +206,6 @@ def train():
         oldvalues = torch.cat(oldvaluebatch)
         targvalues = torch.cat(targvaluebatch)
         advantages = targvalues - oldvalues
-        print(targvalues.abs().mean())
         print("cat's game frac:", 1 - targvalues.abs().mean())
         print(states.shape, oldactionprobs.shape, actions.shape, oldvalues.shape, targvalues.shape, advantages.shape)
         if (targvalues.abs().mean() == 1.0):
@@ -217,6 +216,7 @@ def train():
         dataloader = torch.utils.data.DataLoader(dataset, batch_size=minibatch_size, sampler=sampler, drop_last=True)
         firstsample = True
         #m.train()
+        t0 = time.time()
         for k in range(epochs):
             for minibstates, miniboldactionprobs, minibactions, miniboldvalues, minibtargvalues, minibadvantages in dataloader:
                 optim.zero_grad()
@@ -236,14 +236,69 @@ def train():
                 loss.backward()
                 optim.step()
                 scheduler.step()
+        print("epochs took:", time.time() - t0)
+    torch.save(m.state_dict(), f"{args.t}.pth")
         #print(actionprobs, actions, targvalues, advantages)
+
+def play(model):
+    state_dict = torch.load(model)
+    m = conv_model()
+    m.load_state_dict(state_dict)
+    state = torch.zeros(1, 9, dtype=torch.float)
+    playerfirst = (torch.rand(1) > 0.5).all()
+    print(playerfirst)
+    while(True):
+        state = state * -1.0
+        if not playerfirst:
+            valid = state == 0.0
+            logits, value = m(state)
+            masked = torch.full_like(logits, -torch.inf)
+            masked = torch.where(valid, logits, masked)
+            probs = torch.nn.functional.softmax(masked, -1)
+            sample = torch.clamp(torch.rand(1), min=1e-5)
+            action = torch.searchsorted(probs.cumsum(-1).squeeze(), sample)
+            if int(action) >= 9:
+                print(probs)
+                print(probs.cumsum(-1))
+                print(valid)
+                print(sample)
+                raise Exception
+            if state[0, int(action)]:
+                print(probs)
+                print(probs.cumsum(-1))
+                print(valid)
+                print(sample)
+                raise Exception
+            playerfirst = False
+            state[0, int(action)] = 1.0
+            if util.longest_of(1, state.reshape(3, 3)) == 3:
+                print("player lose")
+                break
+            if util.full(state):
+                print("cat's game")
+                break
+        state = state * -1.0
+        print(state.reshape(-1, 3, 3))
+        playeraction = int(input("player move:"))
+        assert(state[0, playeraction] == 0.0)
+        state[0, playeraction] = 1.0
+        if util.longest_of(1, state.reshape(3, 3)) == 3:
+            print("player win")
+            break
+        if util.full(state):
+            print("cat's game")
+            break
+        playerfirst = False
         
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-r', action='store_true')
-    parser.add_argument('-t', action='store_true')
+    parser.add_argument('-t')
+    parser.add_argument('-p')
     args = parser.parse_args()
     if args.r:
         random_game()
     if args.t:
-        train()
+        train(args.t)
+    if args.p:
+        play(args.p)
