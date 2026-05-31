@@ -80,9 +80,10 @@ def rollout(m):
     secondactions = list()
     first = True
     #m.eval()
+    device = next(m.parameters()).device
     with torch.no_grad():
-        state = torch.zeros(1, 9, dtype=torch.float)
-        while(not util.full(state) and util.longest_of(1, state.reshape(3, 3)) < 3):
+        state = torch.zeros(1, 9, dtype=torch.float, device=device)
+        while(not util.full(state) and util.longest_of_batch(1, state.reshape(1, 3, 3).cpu()) < 3):
             # switch player
             state = state * -1.0
             valid = state == 0.0
@@ -90,7 +91,7 @@ def rollout(m):
             masked = torch.full_like(logits, -torch.inf)
             masked = torch.where(valid, logits, masked)
             probs = torch.nn.functional.softmax(masked, -1)
-            sample = torch.clamp(torch.rand(1), min=1e-5)
+            sample = torch.clamp(torch.rand(1, device=device), min=1e-5)
             action = torch.searchsorted(probs.cumsum(-1).squeeze(), sample)
             #action = torch.searchsorted(probs.cumsum(-1).squeeze(), torch.rand(1) + 1e-6)
             #action = torch.clamp(action, max=8)
@@ -128,7 +129,7 @@ def rollout(m):
     states = torch.cat(firststates + secondstates)
     values = torch.cat(firstvalues + secondvalues)
     actionprobs = torch.cat(firstactionprobs + secondactionprobs)
-    actions = torch.tensor(firstactions + secondactions).reshape(states.size(0), 1)
+    actions = torch.tensor(firstactions + secondactions).reshape(states.size(0), 1).to(device=device)
     targvalues = torch.full_like(values, targfirstvalue)
     targvalues[len(firstvalues):] = -targfirstvalue
     assert(states.size(0) == values.size(0))
@@ -172,14 +173,15 @@ def lossfunc(probs, actions, oldactionprobs, advantages, values, targvalues, ent
     #return -c2*lentropy
 
 
-def train(outname):
+def train(outname, cuda):
     minibatch_size = 16384
     target_batch_size = 16384
     iters = 1000
     epochs = 5
     total_iters = iters*epochs*(target_batch_size//minibatch_size)
     #m = mlp_model()
-    m = conv_model()
+    device = 'cpu' if not cuda else 'cuda'
+    m = conv_model().to(device=device)
     optim = torch.optim.Adam(m.parameters(), lr=3e-3)
     scheduler = torch.optim.lr_scheduler.LinearLR(optim, start_factor=1.0, end_factor=0.001, total_iters=total_iters)
     for i in range(iters):
@@ -255,20 +257,8 @@ def play(model):
             masked = torch.full_like(logits, -torch.inf)
             masked = torch.where(valid, logits, masked)
             probs = torch.nn.functional.softmax(masked, -1)
-            sample = torch.clamp(torch.rand(1), min=1e-5)
-            action = torch.searchsorted(probs.cumsum(-1).squeeze(), sample)
-            if int(action) >= 9:
-                print(probs)
-                print(probs.cumsum(-1))
-                print(valid)
-                print(sample)
-                raise Exception
-            if state[0, int(action)]:
-                print(probs)
-                print(probs.cumsum(-1))
-                print(valid)
-                print(sample)
-                raise Exception
+            action = torch.argmax(probs, dim=-1)
+            print("value:", value)
             playerfirst = False
             state[0, int(action)] = 1.0
             if util.longest_of(1, state.reshape(3, 3)) == 3:
@@ -295,10 +285,12 @@ if __name__ == '__main__':
     parser.add_argument('-r', action='store_true')
     parser.add_argument('-t')
     parser.add_argument('-p')
+    parser.add_argument('--cuda', action='store_true')
     args = parser.parse_args()
     if args.r:
         random_game()
     if args.t:
-        train(args.t)
+        train(args.t, args.cuda)
     if args.p:
         play(args.p)
+
