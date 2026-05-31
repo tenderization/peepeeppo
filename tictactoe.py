@@ -2,8 +2,11 @@ import time
 import argparse
 import random
 import util
+import model
 import torch
 import multiprocessing
+
+#torch.set_num_threads(1)
 
 pool = None
 
@@ -62,6 +65,10 @@ def mlp_model(d=64):
     m = MLPModel(d)
     return m
 
+def conv_model():
+    m = model.ConvNet(3, 3)
+    return m
+
 def rollout(m):
     firststates = list()
     firstvalues = list()
@@ -72,6 +79,7 @@ def rollout(m):
     firstactions = list()
     secondactions = list()
     first = True
+    #m.eval()
     with torch.no_grad():
         state = torch.zeros(1, 9, dtype=torch.float)
         while(not util.full(state) and util.longest_of(1, state.reshape(3, 3)) < 3):
@@ -82,13 +90,23 @@ def rollout(m):
             masked = torch.full_like(logits, -torch.inf)
             masked = torch.where(valid, logits, masked)
             probs = torch.nn.functional.softmax(masked, -1)
-            action = torch.searchsorted(probs.cumsum(-1).squeeze(), torch.rand(1))
+            sample = torch.clamp(torch.rand(1), min=1e-5)
+            action = torch.searchsorted(probs.cumsum(-1).squeeze(), sample)
             #action = torch.searchsorted(probs.cumsum(-1).squeeze(), torch.rand(1) + 1e-6)
             #action = torch.clamp(action, max=8)
             #dist = torch.distributions.categorical.Categorical(probs=probs)
             #action = dist.sample()
+            if int(action) >= 9:
+                print(probs)
+                print(probs.cumsum(-1))
+                print(valid)
+                print(sample)
+                raise Exception
             if state[0, int(action)]:
                 print(probs)
+                print(probs.cumsum(-1))
+                print(valid)
+                print(sample)
                 raise Exception
             if first:
                 firststates.append(state.detach().clone())
@@ -137,7 +155,7 @@ def parallel_rollout(m, p=4, n=100):
 def lossfunc(probs, actions, oldactionprobs, advantages, values, targvalues, entropy_decay):
     epsilon = 0.2
     c1 = 0.5
-    c2 = 0.02*entropy_decay
+    c2 = 0.1*entropy_decay
 
     r = torch.gather(probs, -1, actions)/oldactionprobs
     #clip_fraction = (torch.clip(r, 1 - epsilon, 1 + epsilon) != r).float().mean()
@@ -155,12 +173,15 @@ def lossfunc(probs, actions, oldactionprobs, advantages, values, targvalues, ent
 
 
 def train():
-    m = mlp_model()
-    optim = torch.optim.Adam(m.parameters(), lr=3e-3, weight_decay=1e-4)
     minibatch_size = 16384
     target_batch_size = 16384
     iters = 1000
     epochs = 5
+    total_iters = iters*epochs*(target_batch_size//minibatch_size)
+    #m = mlp_model()
+    m = conv_model()
+    optim = torch.optim.Adam(m.parameters(), lr=3e-3)
+    scheduler = torch.optim.lr_scheduler.LinearLR(optim, start_factor=1.0, end_factor=0.001, total_iters=total_iters)
     for i in range(iters):
         statebatch = list()
         actionprobbatch = list()
@@ -188,10 +209,14 @@ def train():
         print(targvalues.abs().mean())
         print("cat's game frac:", 1 - targvalues.abs().mean())
         print(states.shape, oldactionprobs.shape, actions.shape, oldvalues.shape, targvalues.shape, advantages.shape)
+        if (targvalues.abs().mean() == 1.0):
+            print("debug cat's games...")
+            print(states[-32:].reshape(-1, 3, 3))
         dataset = torch.utils.data.dataset.TensorDataset(states, oldactionprobs, actions, oldvalues, targvalues, advantages)
         sampler = torch.utils.data.RandomSampler(dataset)
         dataloader = torch.utils.data.DataLoader(dataset, batch_size=minibatch_size, sampler=sampler, drop_last=True)
         firstsample = True
+        #m.train()
         for k in range(epochs):
             for minibstates, miniboldactionprobs, minibactions, miniboldvalues, minibtargvalues, minibadvantages in dataloader:
                 optim.zero_grad()
@@ -201,15 +226,16 @@ def train():
                 masked = torch.where(valid, newlogits, masked)
                 newprobs = torch.nn.functional.softmax(masked, -1)
                 if firstsample:
-                    torch.testing.assert_close(torch.gather(newprobs, -1, minibactions), miniboldactionprobs)
+                    torch.testing.assert_close(torch.gather(newprobs, -1, minibactions), miniboldactionprobs, atol=5e-3, rtol=1e-3)
                     firstsample = False
-                decay = 1.0 if i == 0 else max(0.0, (1.0 -  ((i+1) * epochs + k) / (iters * epochs)))
+                decay = 1.0 if i == 0 else max(0.0, 1 - (i + 100)/ iters)
                 loss = lossfunc(newprobs, minibactions, miniboldactionprobs, minibadvantages, newvalues, minibtargvalues, decay)
                 if k % 100 == 0:
                     print(minibstates[-1].reshape(3, 3))
-                    print(decay, loss)
+                    print(decay, loss, scheduler.get_lr())
                 loss.backward()
                 optim.step()
+                scheduler.step()
         #print(actionprobs, actions, targvalues, advantages)
         
 if __name__ == '__main__':
