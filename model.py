@@ -20,6 +20,8 @@ class ConvNet(torch.nn.Module):
         self.h = h
         self.w = w
         self.channels = channels
+        self.d = d
+        self.layers = layers
         self.conv1 = torch.nn.Conv2d(1, channels, kernel_size=3, stride=1, padding=1)
         self.norm1 = torch.nn.InstanceNorm2d(channels)
         self.act1 = torch.nn.ReLU()

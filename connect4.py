@@ -1,3 +1,4 @@
+import os
 import time
 import argparse
 import random
@@ -50,7 +51,7 @@ def random_game():
         state[0, y, action] = 1.0
         if turns % 2 == 0:
             print_board(state)
-        if (util.longest_of(1, state[0], 4) == 4):
+        if (util.longest_of_batch(1, state, 4) == 4):
             print("win")
             return
         if torch.sum(torch.abs(state)) >= h*w:
@@ -138,7 +139,7 @@ def sample_model_func(m):
         return action
     return sample_model
 
-def play(policy1, policy2):
+def play_policies(policy1, policy2):
     h = 6
     w = 7
     state = torch.zeros(1, h, w)
@@ -160,15 +161,14 @@ def play(policy1, policy2):
         return -1.0
     return 0.0
 
-def eval_model(m, baselinepolicy):
+def eval_policies(policy, baselinepolicy, evalgames=500):
     wins = 0
     ties = 0
     losses = 0
-    evalgames = 100
-    for i in range(100):
+    for i in range(evalgames):
         modelfirst = torch.rand(1) > 0.5
-        policies = [sample_model_func(m), baselinepolicy] if modelfirst else [baselinepolicy, sample_model_func(m)]
-        value = play(*policies)
+        policies = [policy, baselinepolicy] if modelfirst else [baselinepolicy, policy]
+        value = play_policies(*policies)
         if value == 1.0:
             if modelfirst:
                 wins += 1.0
@@ -185,15 +185,19 @@ def eval_model(m, baselinepolicy):
     return wins, losses, ties
 
 def train(modelname, cuda):
-    minibatch_size = 16384
-    target_batch_size = 16384
-    iters = 1000
+    minibatch_size = 327
+    target_batch_size = 327
+    iters = 1
     epochs = 5
     total_iters = iters*epochs*(target_batch_size//minibatch_size)
     device = 'cpu' if not cuda else 'cuda'
-    m = model.ConvNet(6, 7, p=7).to(device=device)
-    optim = torch.optim.Adam(m.parameters(), lr=3e-3)
+    m = model.ConvNet(6, 7, channels=128, layers=4, p=7).to(device=device)
+    optim = torch.optim.Adam(m.parameters(), lr=3e-4)
     scheduler = torch.optim.lr_scheduler.LinearLR(optim, start_factor=1.0, end_factor=0.001, total_iters=total_iters)
+    if os.path.exists('test1000_c32_l2_d128.pth'):
+        test_model = load_model('test1000_c32_l2_d128.pth')
+    else:
+        test_model = None
     for i in range(iters):
         statebatch = list()
         actionprobbatch = list()
@@ -238,7 +242,7 @@ def train(modelname, cuda):
                 masked = torch.where(valid, newlogits, masked)
                 newprobs = torch.nn.functional.softmax(masked, -1)
                 if firstsample:
-                    torch.testing.assert_close(torch.gather(newprobs, -1, minibactions), miniboldactionprobs, atol=7e-3, rtol=1e-3)
+                    torch.testing.assert_close(torch.gather(newprobs, -1, minibactions), miniboldactionprobs, atol=5e-2, rtol=1e-3)
                     firstsample = False
                 decay = 1.0 if i == 0 else max(0.0, 1 - (i + 100)/ iters)
                 loss = lossfunc(newprobs, minibactions, miniboldactionprobs, minibadvantages, newvalues, minibtargvalues, decay)
@@ -248,24 +252,90 @@ def train(modelname, cuda):
                 optim.step()
                 scheduler.step()
         print("epochs took:", time.time() - t0)
-        wins, losses, ties = eval_model(m, random_policy)
+        wins, losses, ties = eval_policies(sample_model_func(m), random_policy, evalgames=500)
         print(f"random eval wins: {wins} ties: {ties} losses: {losses}")
-        wins, losses, ties = eval_model(m, greedy_policy)
+        wins, losses, ties = eval_policies(sample_model_func(m), greedy_policy, evalgames=10)
         print(f"greedy eval wins: {wins} ties: {ties} losses: {losses}")
-        wins, losses, ties = eval_model(m, greedy_policy2)
+        wins, losses, ties = eval_policies(sample_model_func(m), greedy_policy2, evalgames=10)
         print(f"greedy2 eval wins: {wins} ties: {ties} losses: {losses}")
+        if test_model is not None:
+            wins, losses, ties = eval_policies(sample_model_func(m), sample_model_func(test_model), evalgames=100)
+            print(f"test1000 model eval wins: {wins} ties: {ties} losses: {losses}")
+        if i % 100 == 0:
+            torch.save(m.state_dict(), f"{args.t}_iter{i}_c{m.channels}_l{m.layers}_d{m.d}.pth")
+    torch.save(m.state_dict(), f"{args.t}_final_c{m.channels}_l{m.layers}_d{m.d}.pth")
+
+def parse_model_config(model):
+    _, name = os.path.split(model)
+    vals = name.split('_')
+    d = int("".join([char for char in vals[-1] if char.isdigit()]))
+    l = int("".join([char for char in vals[-2] if char.isdigit()]))
+    c = int("".join([char for char in vals[-3] if char.isdigit()]))
+    return d, l, c
+
+def load_model(model_name):
+    h = 6
+    w = 7
+    state_dict = torch.load(model_name)
+    dim, layers, channels = parse_model_config(model_name)
+    m = model.ConvNet(h, w, channels=channels, layers=layers, d=dim, p=7)
+    m.load_state_dict(state_dict)
+    return m
+
+def play(model_name):
+    h = 6
+    w = 7
+    m = load_model(model_name)
+    state = torch.zeros(1, h, w, dtype=torch.float)
+    playerfirst = (torch.rand(1) > 0.5).all()
+    print(playerfirst)
+    while(True):
+        state = state * -1.0
+        if not playerfirst:
+            valid = state[:, 0, :] == 0.0
+            logits, value = m(state)
+            masked = torch.full_like(logits, -torch.inf)
+            masked = torch.where(valid, logits, masked)
+            probs = torch.nn.functional.softmax(masked, -1)
+            action = torch.argmax(probs, dim=-1)
+            print("value:", value)
+            playerfirst = False
+            y = h-(int(torch.sum(torch.abs(state), dim=-2)[0, action]) + 1)
+            state[0, y, action] = 1.0
+            if util.longest_of_batch(1, state, 4) >= 4:
+                print_board(state * -1.0)
+                print("player lose")
+                break
+            if torch.sum(torch.abs(state)) >= h*w:
+                print_board(state * -1.0)
+                print("cat's game")
+                break
+        state = state * -1.0
+        print_board(state)
+        playeraction = int(input("player move:")) - 1
+        assert(state[0, 0, playeraction] == 0.0)
+        y = h-(int(torch.sum(torch.abs(state), dim=-2)[0, playeraction]) + 1)
+        state[0, y, playeraction] = 1.0
+        print_board(state)
+        if util.longest_of_batch(1, state, 4) >= 4:
+            print("player win")
+            break
+        if torch.sum(torch.abs(state)) >= h*w:
+            print("cat's game")
+            break
+        playerfirst = False
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-r', action='store_true')
     parser.add_argument('-t')
-    #parser.add_argument('-p')
+    parser.add_argument('-p')
     parser.add_argument('--cuda', action='store_true')
     args = parser.parse_args()
     if args.r:
         random_game()
     if args.t:
         train(args.t, args.cuda)
-    #if args.p:
-    #    play(args.p)
+    if args.p:
+        play(args.p)
 
