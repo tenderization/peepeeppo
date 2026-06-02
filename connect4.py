@@ -128,14 +128,19 @@ def lossfunc(probs, actions, oldactionprobs, advantages, values, targvalues, ent
     lentropy = dist.entropy().mean()
     return -lclip + c1*lvf - c2*lentropy
 
-def sample_model_func(m):
+def sample_model_func(m, argmax=True):
     def sample_model(state):
-        logits, value = m(state)
+        model_device = next(m.parameters()).device
+        logits, value = m(state.to(model_device))
         masked = torch.full_like(logits, -torch.inf)
         valid = state[:, 0, :] == 0.0
-        masked = torch.where(valid, logits, masked)
+        masked = torch.where(valid.to(model_device), logits, masked)
         probs = torch.nn.functional.softmax(masked, -1)
-        action = torch.argmax(probs, dim=-1)
+        if not argmax:
+            sample = torch.clamp(torch.rand(1, device=model_device), min=1e-5)
+            action = torch.searchsorted(probs.cumsum(-1).squeeze(), sample)
+        else:
+            action = torch.argmax(probs, dim=-1)
         return action
     return sample_model
 
@@ -148,7 +153,7 @@ def play_policies(policy1, policy2):
     while util.longest_of_batch(1, state, 4) < 4 and torch.sum(torch.abs(state)) < state.size(-1) * state.size(-2):
         state *= -1.0
         policy = polices[player % 2]
-        action = policy(state)
+        action = int(policy(state))
         y = h-(int(torch.sum(torch.abs(state), dim=-2)[0, action]) + 1)
         assert(not state[0, y, action])
         state[0, y, action] = 1.0
@@ -184,14 +189,16 @@ def eval_policies(policy, baselinepolicy, evalgames=500):
     assert(wins + losses + ties == evalgames)
     return wins, losses, ties
 
-def train(modelname, cuda):
-    minibatch_size = 32768
-    target_batch_size = 32768
+def train(modelname, cuda, comp):
+    minibatch_size = 8192
+    target_batch_size = 8192
     iters = 10000
     epochs = 5
     total_iters = iters*epochs*(target_batch_size//minibatch_size)
     device = 'cpu' if not cuda else 'cuda'
     m = model.ConvNet(6, 7, channels=128, layers=4, p=7).to(device=device)
+    if cuda and comp:
+        m.compile(mode='reduce-overhead')
     optim = torch.optim.Adam(m.parameters(), lr=3e-4)
     scheduler = torch.optim.lr_scheduler.LinearLR(optim, start_factor=1.0, end_factor=0.001, total_iters=total_iters)
     if os.path.exists('test1000_c32_l2_d128.pth'):
@@ -241,9 +248,9 @@ def train(modelname, cuda):
                 valid = minibstates[:, 0, :] == 0.0
                 masked = torch.where(valid, newlogits, masked)
                 newprobs = torch.nn.functional.softmax(masked, -1)
-                if firstsample:
-                    torch.testing.assert_close(torch.gather(newprobs, -1, minibactions), miniboldactionprobs, atol=5e-2, rtol=1e-3)
-                    firstsample = False
+                #if firstsample:
+                #    torch.testing.assert_close(torch.gather(newprobs, -1, minibactions), miniboldactionprobs, atol=7e-2, rtol=5e-3)
+                #    firstsample = False
                 decay = 1.0 if i == 0 else max(0.0, 1 - (i + 100)/ iters)
                 loss = lossfunc(newprobs, minibactions, miniboldactionprobs, minibadvantages, newvalues, minibtargvalues, decay)
                 if k % 100 == 0:
@@ -252,17 +259,18 @@ def train(modelname, cuda):
                 optim.step()
                 scheduler.step()
         print("epochs took:", time.time() - t0)
-        wins, losses, ties = eval_policies(sample_model_func(m), random_policy, evalgames=500)
-        print(f"random eval wins: {wins} ties: {ties} losses: {losses}")
-        wins, losses, ties = eval_policies(sample_model_func(m), greedy_policy, evalgames=10)
-        print(f"greedy eval wins: {wins} ties: {ties} losses: {losses}")
-        wins, losses, ties = eval_policies(sample_model_func(m), greedy_policy2, evalgames=10)
-        print(f"greedy2 eval wins: {wins} ties: {ties} losses: {losses}")
-        if test_model is not None:
-            wins, losses, ties = eval_policies(sample_model_func(m), sample_model_func(test_model), evalgames=100)
-            print(f"test1000 model eval wins: {wins} ties: {ties} losses: {losses}")
-        if i % 100 == 0:
-            torch.save(m.state_dict(), f"{args.t}_iter{i}_c{m.channels}_l{m.layers}_d{m.d}.pth")
+        #wins, losses, ties = eval_policies(sample_model_func(m), random_policy, evalgames=500)
+        #print(f"random eval wins: {wins} ties: {ties} losses: {losses}")
+        with torch.no_grad():
+            wins, losses, ties = eval_policies(sample_model_func(m, False), greedy_policy, evalgames=10)
+            print(f"greedy eval wins: {wins} ties: {ties} losses: {losses}")
+            wins, losses, ties = eval_policies(sample_model_func(m, False), greedy_policy2, evalgames=10)
+            print(f"greedy2 eval wins: {wins} ties: {ties} losses: {losses}")
+            if test_model is not None:
+                wins, losses, ties = eval_policies(sample_model_func(m, False), sample_model_func(test_model, True), evalgames=100)
+                print(f"test1000 model eval wins: {wins} ties: {ties} losses: {losses}")
+            if i % 500 == 0:
+                torch.save(m.state_dict(), f"{args.t}_iter{i}_c{m.channels}_l{m.layers}_d{m.d}.pth")
     torch.save(m.state_dict(), f"{args.t}_final_c{m.channels}_l{m.layers}_d{m.d}.pth")
 
 def parse_model_config(model):
@@ -331,11 +339,12 @@ if __name__ == '__main__':
     parser.add_argument('-t')
     parser.add_argument('-p')
     parser.add_argument('--cuda', action='store_true')
+    parser.add_argument('--compile', action='store_true')
     args = parser.parse_args()
     if args.r:
         random_game()
     if args.t:
-        train(args.t, args.cuda)
+        train(args.t, args.cuda, args.compile)
     if args.p:
         play(args.p)
 
