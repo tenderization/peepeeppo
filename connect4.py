@@ -185,9 +185,9 @@ def eval_policies(policy, baselinepolicy, evalgames=500):
     return wins, losses, ties
 
 def train(modelname, cuda):
-    minibatch_size = 327
-    target_batch_size = 327
-    iters = 1
+    minibatch_size = 32768
+    target_batch_size = 32768
+    iters = 10000
     epochs = 5
     total_iters = iters*epochs*(target_batch_size//minibatch_size)
     device = 'cpu' if not cuda else 'cuda'
