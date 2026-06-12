@@ -293,7 +293,10 @@ def parse_model_config(model):
 def load_model(model_name):
     h = 6
     w = 7
-    state_dict = torch.load(model_name)
+    if not torch.cuda.is_available():
+        state_dict = torch.load(model_name, map_location=torch.device('cpu'))
+    else:
+        state_dict = torch.load(model_name)
     dim, layers, channels = parse_model_config(model_name)
     m = model.ConvNet(h, w, channels=channels, layers=layers, d=dim, p=7)
     m.load_state_dict(state_dict)
