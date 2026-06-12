@@ -334,7 +334,8 @@ def play(model_name, first, second):
         state = state * -1.0
         print_board(state)
         playeraction = int(input("player move:")) - 1
-        while state[0, 0, playeraction] != 0.0:
+        moves = [i for i in range(1, 8)]
+        while state[0, 0, playeraction] != 0.0 or playeraction not in moves:
             playeraction = int(input("player move:")) - 1
         y = h-(int(torch.sum(torch.abs(state), dim=-2)[0, playeraction]) + 1)
         state[0, y, playeraction] = 1.0
