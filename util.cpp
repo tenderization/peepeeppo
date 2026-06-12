@@ -9,7 +9,6 @@ at::Tensor longest_of_cpu(
     const at::Tensor& input,
     int64_t marker,
     int64_t stop) {
-    TORCH_CHECK(input.scalar_type() == at::kFloat);
     TORCH_CHECK(input.dim() == 3);
     int batch_size = input.size(0);
     int h = input.size(1);

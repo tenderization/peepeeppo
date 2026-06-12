@@ -6,6 +6,8 @@ import util
 import model
 import torch
 
+torch.set_float32_matmul_precision('high')
+
 def random_policy(state):
     h = state.size(-2)
     while True:
@@ -76,7 +78,7 @@ def rollout(m):
     w = 7
     size = h * w
     with torch.no_grad():
-        state = torch.zeros(1, h, w, dtype=torch.float, device=device)
+        state = torch.zeros(1, h, w, device=device)
         while(torch.sum(torch.abs(state)) < size and util.longest_of_batch(1, state.cpu(), 4) < 4):
             # switch player
             state = state * -1.0
@@ -85,7 +87,7 @@ def rollout(m):
             masked = torch.full_like(logits, -torch.inf)
             masked = torch.where(valid, logits, masked)
             probs = torch.nn.functional.softmax(masked, -1)
-            sample = torch.clamp(torch.rand(1, device=device), min=1e-5)
+            sample = torch.clamp(torch.rand(1, device=device), min=1e-5, max=0.99999)
             action = torch.searchsorted(probs.cumsum(-1).squeeze(), sample)
             if first:
                 firststates.append(state.detach().clone())
@@ -137,7 +139,7 @@ def sample_model_func(m, argmax=True):
         masked = torch.where(valid.to(model_device), logits, masked)
         probs = torch.nn.functional.softmax(masked, -1)
         if not argmax:
-            sample = torch.clamp(torch.rand(1, device=model_device), min=1e-5)
+            sample = torch.clamp(torch.rand(1, device=model_device), min=1e-5, max=0.99999)
             action = torch.searchsorted(probs.cumsum(-1).squeeze(), sample)
         else:
             action = torch.argmax(probs, dim=-1)
@@ -196,7 +198,7 @@ def train(modelname, cuda, comp):
     epochs = 5
     total_iters = iters*epochs*(target_batch_size//minibatch_size)
     device = 'cpu' if not cuda else 'cuda'
-    m = model.ConvNet(6, 7, channels=128, layers=4, p=7).to(device=device)
+    m = model.ConvNet(6, 7, channels=256, layers=5, d=512, p=7).to(device=device)
     if cuda and comp:
         m.compile(mode='reduce-overhead')
     optim = torch.optim.Adam(m.parameters(), lr=3e-4)
@@ -205,6 +207,10 @@ def train(modelname, cuda, comp):
         test_model = load_model('test1000_c32_l2_d128.pth')
     else:
         test_model = None
+    if os.path.exists('test10000_final_c128_l4_d128.pth'):
+        test_model2 = load_model('test10000_final_c128_l4_d128.pth')
+    else:
+        test_model2 = None
     for i in range(iters):
         statebatch = list()
         actionprobbatch = list()
@@ -223,7 +229,7 @@ def train(modelname, cuda, comp):
             oldvaluebatch.append(currvalues)
             targvaluebatch.append(currtargvalues)
             total_batch_size += len(currvalues)
-        print("rollout took: ", time.time() - t0)
+        print(i, " rollout took: ", time.time() - t0)
         states = torch.cat(statebatch)
         oldactionprobs = torch.cat(actionprobbatch)
         actions = torch.cat(actionbatch)
@@ -269,6 +275,9 @@ def train(modelname, cuda, comp):
             if test_model is not None:
                 wins, losses, ties = eval_policies(sample_model_func(m, False), sample_model_func(test_model, True), evalgames=100)
                 print(f"test1000 model eval wins: {wins} ties: {ties} losses: {losses}")
+            if test_model2 is not None:
+                wins, losses, ties = eval_policies(sample_model_func(m, False), sample_model_func(test_model2, True), evalgames=100)
+                print(f"test10000 model eval wins: {wins} ties: {ties} losses: {losses}")
             if i % 500 == 0:
                 torch.save(m.state_dict(), f"{args.t}_iter{i}_c{m.channels}_l{m.layers}_d{m.d}.pth")
     torch.save(m.state_dict(), f"{args.t}_final_c{m.channels}_l{m.layers}_d{m.d}.pth")
@@ -290,13 +299,14 @@ def load_model(model_name):
     m.load_state_dict(state_dict)
     return m
 
-def play(model_name):
+def play(model_name, first, second):
     h = 6
     w = 7
     m = load_model(model_name)
     state = torch.zeros(1, h, w, dtype=torch.float)
     playerfirst = (torch.rand(1) > 0.5).all()
-    print(playerfirst)
+    if first or second:
+        playerfirst = first
     while(True):
         state = state * -1.0
         if not playerfirst:
@@ -321,7 +331,8 @@ def play(model_name):
         state = state * -1.0
         print_board(state)
         playeraction = int(input("player move:")) - 1
-        assert(state[0, 0, playeraction] == 0.0)
+        while state[0, 0, playeraction] != 0.0:
+            playeraction = int(input("player move:")) - 1
         y = h-(int(torch.sum(torch.abs(state), dim=-2)[0, playeraction]) + 1)
         state[0, y, playeraction] = 1.0
         print_board(state)
@@ -340,11 +351,17 @@ if __name__ == '__main__':
     parser.add_argument('-p')
     parser.add_argument('--cuda', action='store_true')
     parser.add_argument('--compile', action='store_true')
+    parser.add_argument('--first', action='store_true')
+    parser.add_argument('--second', action='store_true')
     args = parser.parse_args()
+    if args.first:
+        assert(not args.second)
+    if args.second:
+        assert(not args.first)
     if args.r:
         random_game()
     if args.t:
         train(args.t, args.cuda, args.compile)
     if args.p:
-        play(args.p)
+        play(args.p, args.first, args.second)
 
